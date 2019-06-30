@@ -1,93 +1,151 @@
 import * as cheerio from "cheerio";
-import axios from "axios";
+import { AxiosInstance } from "axios";
+import Axios from "axios";
 import * as url from "url";
+import console = require("console");
 
 abstract class Item {
-  public __name = "__itemtype";
+  public readonly __name = "__item";
 }
 
-class Plane extends Item {
-  public title: string = "";
-  public price: number = 0;
+interface IScraperOptions {
+  traversalDepth?: number;
+  linkExtractors?: LinkExtractor[];
+  items?: Item[];
+  waitTimeinMSBetweenRequests?: number;
 }
 
-class CraigslistScraper {
-  constructor(private query = "") {}
-  async getNextLink(data) {}
-  async parsePage(pageUrl: string) {
-    try {
-      const { data, status } = await axios.get(
-        url.resolve(
-          pageUrl,
-          `/search/sss?query=${encodeURIComponent(this.query)}&sort=rel`
-        )
-      );
-      const $ = cheerio.load(data);
-      return {
-        *[Symbol.iterator]() {
-          const d = $("ul > li .result-info")
-            .map((_, el) => {
-              const plane = new Plane();
-              const price = $(".result-price", el).text();
-              plane.title = $(".result-title", el).text();
-              plane.price = parseInt(price.replace("$", ""), 10);
-              return plane;
-            })
-            .get();
-          for (let idx in d) {
-            yield d[idx];
-          }
+class ItemParser {
+  public selector: string;
+  public callback: (response: CheerioStatic) => void;
+  constructor({ callback, selector }) {
+    this.selector = selector;
+    this.callback = callback;
+  }
+}
+
+class Link {
+  public readonly __name = "__link";
+  constructor(public url: string) {}
+}
+
+class LinkExtractor {
+  public selector: string;
+  public callback: (link: Link) => any;
+  public shouldFollow: boolean;
+  constructor({ selector, callback, shouldFollow = false }) {
+    this.selector = selector;
+    this.callback = callback;
+    this.shouldFollow = shouldFollow;
+  }
+}
+
+class Field {
+  public readonly __name = "__field";
+  public static __name = "__field";
+  public selector: string;
+  constructor(selector: string) {
+    this.selector = selector;
+  }
+}
+
+class Scraper {
+  private urlRegex = /https?:\/\/(www\.)?[-a-zA-Z0-9@:%._\+~#=]{2,256}\.[a-z]{2,6}\b([-a-zA-Z0-9@:%_\+.~#?&//=]*)/gi;
+  public readonly __name = "__scraper";
+  private traversalDepth: number = 0;
+  private client: AxiosInstance;
+  public linkExtractors?: LinkExtractor[];
+  public items?: Item[];
+  private waitTime;
+  constructor({ traversalDepth, linkExtractors, items = [] }: IScraperOptions) {
+    this.traversalDepth = traversalDepth || this.traversalDepth;
+    this.linkExtractors = linkExtractors || [];
+    this.initializeRequestAgent();
+    this.items = items || [];
+  }
+
+  private initializeRequestAgent() {
+    this.client = Axios.create();
+    this.client.interceptors.response.use(
+      response => response,
+      error => {
+        if (error.response.status === 401) {
+          console.warn(JSON.stringify(error, null, 2));
         }
-      };
-    } catch (e) {
-      console.log('error parsing page')
-    }
+      }
+    );
   }
-  async getLocations() {
-    try {
-      const { data, status } = await axios.get(
-        "https://geo.craigslist.org/iso/us"
-      );
-      if (status === 200 && data) {
-        const $ = cheerio.load(data);
 
-        const d = $("ul > li > a");
-        return {
-          *[Symbol.iterator]() {
-            for (const el in d) {
-              if (!d[el].attribs || !d[el].attribs.href) {
-                continue;
-              }
-              const url = d[el].attribs.href;
-              yield url;
-            }
+  private extractLinksFromPage(
+    extractor: LinkExtractor,
+    $: CheerioStatic,
+    baseUrl: URL
+  ): Link[] {
+    const linkElements = $(extractor.selector)
+      .map((_, el) => {
+        if (el.attribs["href"]) {
+          let refUrl = $(el).attr("href");
+          if (!this.isValidUrl(refUrl)) {
+            refUrl = url.resolve(baseUrl.origin, refUrl);
           }
-        };
-      } else {
-        console.log("error");
-      }
-    } catch (e) {
-      console.log("Error getting locations");
+          return refUrl;
+        }
+      })
+      .get();
+    return linkElements.map(index => linkElements[index]);
+    // for (const index in links) {
+    //   const link = new Link(links[index]);
+    //   extractor.callback(link);
+    //   yield link;
+    // }
+  }
+
+  private isValidUrl(url: string) {
+    return this.urlRegex.test(url);
+  }
+
+  private getAllLinks($: CheerioStatic) {
+    $("")
+      .text.toString()
+      .match(this.urlRegex);
+  }
+
+  private *handleLinkExtraction($: CheerioStatic, startUrl) {
+    const extractedLinks = this.extractLinksFromPage(
+      extractor,
+      $,
+      new URL(startUrl)
+    );
+    for (let l of extractedLinks) {
+      yield l
     }
   }
-  async scrape(resultCallback=(result: Item) => {}) {
-    for (let value of await this.getLocations()) {
-      for (let result of await this.parsePage(value)) {
-        resultCallback(result)
-      }
-    }
-    return Promise.resolve()
+
+  private async getPageContent(startUrl: string) {
+    const { data: response } = await this.client.get(startUrl);
+    const $ = cheerio.load(response);
+    this.handleLinkExtraction($, startUrl);
   }
+
+  public async scrape(startUrl: string) {}
 }
 
-const results =[]
-
-const scraper = new CraigslistScraper("cessna");
-
-const logResult = (result: Item) => {
-  results.push(result)
+class City extends Item {
+  baseSelector = "ul li";
+  name = new Field("a");
 }
 
-scraper.scrape(logResult).then(() => {
-  console.log('res', results)
-})
+const extractor = new LinkExtractor({
+  callback: link => {
+    // console.log("found link", link.url);
+  },
+  selector: "div>ul li a",
+  shouldFollow: false
+});
+
+const cityScraper = new Scraper({
+  traversalDepth: 1,
+  linkExtractors: [extractor]
+});
+
+cityScraper.scrape("https://health.usnews.com/doctors/city-index/utah");
