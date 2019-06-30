@@ -57,9 +57,16 @@ class Scraper {
   public linkExtractors?: LinkExtractor[];
   public items?: Item[];
   private waitTime;
-  constructor({ traversalDepth, linkExtractors, items = [] }: IScraperOptions) {
+  private waitPromise: Promise<void>;
+  constructor({
+    traversalDepth,
+    linkExtractors,
+    items = [],
+    waitTimeinMSBetweenRequests
+  }: IScraperOptions) {
     this.traversalDepth = traversalDepth || this.traversalDepth;
     this.linkExtractors = linkExtractors || [];
+    this.waitTime = waitTimeinMSBetweenRequests;
     this.initializeRequestAgent();
     this.items = items || [];
   }
@@ -81,7 +88,7 @@ class Scraper {
     $: CheerioStatic,
     baseUrl: URL
   ): Link[] {
-    const linkElements = $(extractor.selector)
+    return $(extractor.selector)
       .map((_, el) => {
         if (el.attribs["href"]) {
           let refUrl = $(el).attr("href");
@@ -91,13 +98,8 @@ class Scraper {
           return refUrl;
         }
       })
-      .get();
-    return linkElements.map(index => linkElements[index]);
-    // for (const index in links) {
-    //   const link = new Link(links[index]);
-    //   extractor.callback(link);
-    //   yield link;
-    // }
+      .get()
+      .map(foundUrl => new Link(foundUrl));
   }
 
   private isValidUrl(url: string) {
@@ -111,23 +113,42 @@ class Scraper {
   }
 
   private *handleLinkExtraction($: CheerioStatic, startUrl) {
-    const extractedLinks = this.extractLinksFromPage(
-      extractor,
-      $,
-      new URL(startUrl)
-    );
-    for (let l of extractedLinks) {
-      yield l
+    if (!this.linkExtractors) {
+      return;
+    }
+    for (let extractor of this.linkExtractors) {
+      for (let l of this.extractLinksFromPage(
+        extractor,
+        $,
+        new URL(startUrl)
+      )) {
+        extractor.callback(l);
+        yield l;
+      }
     }
   }
 
   private async getPageContent(startUrl: string) {
-    const { data: response } = await this.client.get(startUrl);
-    const $ = cheerio.load(response);
-    this.handleLinkExtraction($, startUrl);
+    try {
+      await this.waitPromise;
+      const { data: response } = await this.client.get(startUrl);
+      const $ = cheerio.load(response);
+      for (let link of this.handleLinkExtraction($, startUrl)) {
+        if (link && link.__name === "__link") {
+          this.getPageContent(link.url);
+        }
+      }
+      this.waitPromise = new Promise(resolve =>
+        setTimeout(resolve, this.waitTime)
+      );
+    } catch (e) {
+      throw new Error("failed to fetch webpage");
+    }
   }
 
-  public async scrape(startUrl: string) {}
+  public async scrape(startUrl: string) {
+    this.getPageContent(startUrl);
+  }
 }
 
 class City extends Item {
@@ -137,7 +158,7 @@ class City extends Item {
 
 const extractor = new LinkExtractor({
   callback: link => {
-    // console.log("found link", link.url);
+    console.log("found link", link);
   },
   selector: "div>ul li a",
   shouldFollow: false
@@ -145,6 +166,7 @@ const extractor = new LinkExtractor({
 
 const cityScraper = new Scraper({
   traversalDepth: 1,
+  waitTimeinMSBetweenRequests: 100,
   linkExtractors: [extractor]
 });
 
