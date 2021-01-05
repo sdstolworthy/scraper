@@ -12,7 +12,7 @@
   "dependencies": {
     "@types/axios": "^0.14.0",
     "@types/cheerio": "^0.22.11",
-    "axios": "^0.19.0",
+    "axios": "^0.21.1",
     "cheerio": "^1.0.0-rc.3",
     "ts-node-dev": "^1.0.0-pre.40",
     "typescript": "^3.5.2"
